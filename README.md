@@ -763,6 +763,56 @@ var kappa = errorMatrix.kappa();
 print('Matriz de Confusión:', errorMatrix);
 print('Índice Kappa:', kappa);
 
+# ANALISIS HUMEDALES
+
+Map.addLayer({
+  eeObject: ubicacion,
+  name: 'Municipio de Santa Luzia do Itanhy',
+  shown: 0
+});
+
+// Localizacion
+var area = ee.FeatureCollection(ubicacion);
+
+// Establezca el área de estudio como centro del mapa.
+Map.centerObject(area);
+
+var dataset = ee.Image('JRC/GSW1_4/GlobalSurfaceWater').clip(area);
+
+var seasonality = dataset.select('seasonality').lte(6); // Seleccionamos la banda 'occurrence' y aplicamos la máscara
+
+// Aplicamos la máscara a la imagen del dataset
+var seasonalityUpdate = dataset.updateMask(seasonality).toUint16();
+
+var visualizationSeasonality = {
+  bands: ['seasonality'],
+  min: 0,
+  max: 6,
+    palette: ['ffffff', 'ffbbbb']
+};
+
+//Map.addLayer(seasonalityUpdate, visualizationSeasonality, 'seasonality');
+
+var transition = {
+  bands: ['transition'],
+  min: 0,
+  max: 10,
+  palette: ['ffffff', '#0000ff', '#22b14c', '#d1102d', '#99d9ea', '#b5e61d', '#e6a1aa', '#ff7f27', '#ffc90e', '#7f7f7f', '#c3c3c3']
+};
+
+Map.addLayer(seasonalityUpdate, transition, 'Transition');
+
+Export.image.toDrive({
+  image: seasonalityUpdate.select('transition'), 
+  description: 'Humedales_Brasil',
+  folder: 'DESCARGAS_GEE', // Cambiar folder
+  fileNamePrefix: 'Humedales_Brasil', // Cambiar nombre predio
+  region: area, 
+  scale: 30, 
+  maxPixels: 1e10
+});
+
+
 
 
 
