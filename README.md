@@ -812,6 +812,512 @@ Export.image.toDrive({
   maxPixels: 1e10
 });
 
+# CODIGOS MES DE OCTUBRE
+
+## CODIGO NUMERO 1
+
+//===============================================================================================================================
+//                                     MODELO CLASIFICACIÓN BnB 
+//===============================================================================================================================
+
+
+//===============================================================================================================================//
+
+//*******************************************************************************************************************************
+//                            PART 1: SELECCIONA,DIBUJA IMPORTA EL AREA A ANALIZAR
+// incialmente debemos importar o dibujar una geometria del area donde se encuentran los predios viables para interpretación 
+// esta se puede hacer con la herramienta de dibujo de geometrias o importando un shapefile o archivo CSV esto con el fin de deli-
+// mitar la zona de estudio, una vez hecho esto procedemos a colocarle nombre en la zona de archivos importados.
+Map.addLayer({
+  eeObject:aoi3, 
+  name: 'Areas Analisis', 
+  shown: 0, 
+});
+
+/******************************************************************************************************************************/
+//                            PART 2: IDENTIFICAR Y EJECUTAR ENTRADAS DE USUARIO
+
+
+// Localizacion
+var area = ee.FeatureCollection(aoi3);
+
+
+// Establezca el área de estudio como centro del mapa.
+Map.centerObject(area);
+
+//*******************************************************************************************************************************
+//                                  PART 4: ESTABLECE LAS FECHAS DE BÚSQUEDA
+
+/*
+Establezca las fechas de inicio y finalización de un período ANTES de la fecha de INICIO del proyecto, esto se recomienda que para landsat 8 sea de 3 meses
+por análisis mientras que para sentinel 2 sea de cada mes esto la disponibilidad de imágenes que captan los satélites y en el detalle 
+del analisis.
+
+*/
+
+
+//Establezca la fecha o parámetros de inicio y fin de la búsqueda:
+
+var time_start = '2020-01-01';   // <--- fecha antes del inicio del proyecto.
+var time_end = '2020-12-30';     // <--- fecha inicio del proyecto.
+// Establecer el umbral máximo de cobertura de nubes (0-100)
+
+// The threshold for masking; values between 0.50 and 0.65 generally work well.
+// Higher values will remove thin clouds, haze & cirrus shadows.
+var CLEAR_THRESHOLD = 0.65;
+
+// Use 'cs' or 'cs_cdf', depending on your use case; see docs for guidance.
+var QA_BAND = 'cs_cdf';
+
+//**********************************************************************************************************************************//
+//                                 PART 5: CARGAR COLECCIONES DE DATOS DE LAS IMAGENES
+
+// Harmonized Sentinel-2 Level 2A collection.
+var s2 = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
+
+// Cloud Score+ image collection. Note Cloud Score+ is produced from Sentinel-2
+// Level 1C data and can be applied to either L1C or L2A collections.
+var csPlus = ee.ImageCollection('GOOGLE/CLOUD_SCORE_PLUS/V1/S2_HARMONIZED');
+
+// Make a clear median composite.
+var collection = s2
+    .filterBounds(area)
+    .filterDate(time_start, time_end)
+    .linkCollection(csPlus, [QA_BAND])
+    .map(function(img) {
+      return img.updateMask(img.select(QA_BAND).gte(CLEAR_THRESHOLD));
+    }).map(function(image){return image.clip(area)});
+
+print(collection);
+var vis = {bands: ['B4', 'B3', 'B3'], min: 224 , max: 1709, gamma: 1};
+Map.addLayer(collection, vis,'Coleccion de imagenes', 0);
+
+var image = collection.median();
+Map.addLayer(image, {bands: ['B4', 'B3', 'B2'], min: 223.5 , max: 1445, gamma: 1},'Mosaico', 1);
+/******************************************************************************************************************************/
+//                                     PART 6: AGREGAR INDICES ESPECTRALES
+
+var addIndices = function(image) {
+  var NDVI = image.normalizedDifference(['B8', 'B4']).rename(['NDVI']);
+  return image.addBands(NDVI)};
+
+var composite = addIndices(image);
+
+Map.addLayer(composite, {min: 0.15055880479471886, max: 0.8577648766328012, bands: ['NDVI']},'NDVI', 0);
+
+// Reclasificar el NDVI usando una función de mapeo condicional
+var NDVIReclass = composite.select('NDVI').expression(
+  "b(0) > 0.68 ? 4 : " +                    // Valores mayores a 0.68 (Áreas de bosque)
+  "b(0) > 0.64 && b(0) <= 0.68 ? 3 : " +    // Valores entre 0.64 y 0.68
+  "b(0) > 0.38 && b(0) <= 0.65 ? 2 : " +    // Valores entre 0.38 y 0.65
+  "b(0) > 0.06 && b(0) <= 0.38 ? 1 : " +    // Valores entre 0.06 y 0.38
+  "b(0) <= 0.06 ? 0 : 0"                    // Valores menores o iguales a 0.06
+).rename('NDVI_Reclass').clip(area);
+
+Map.addLayer(NDVIReclass, {min: 0, max: 4, palette: ['FFFF00', 'F2FF00', 'F2FF00', 'F2FF00', '006400']},'NDVIReclass', 0);
+
+/*
+var addIndices = function(image) {
+    var ARVI = image.expression ('((NIR - (2 * RED) + BLUE) / (NIR + (2 * RED) + BLUE))',{
+        'NIR': image.select ('B8'),
+        'BLUE': image.select ('B2'), 
+        'RED': image.select ('B4')
+    }).rename("ARVI");
+  return image.addBands(ARVI)};
+
+var composite = addIndices(image);
+
+Map.addLayer(composite, {min: 0.15055880479471886, max: 0.8577648766328012, bands: ['ARVI']},'ARVI', 0);
+
+// Reclasificar el NDVI usando una función de mapeo condicional
+var ARVIReclass = composite.select('ARVI').expression(
+  "b(0) > 0.8 && b(0) <= 1 ? 2 : " +      //Vegetación 
+  "b(0) > 0.6 && b(0) <= 0.8 ? 1 : " +    // Vegetación sana
+  "b(0) > 0.6 && b(0) <= -1 ? 0 : 0"   // Sequía, superficies sin agua                   // Valores menores o iguales a 0.06
+).rename('NDVI_Reclass').clip(area);
+
+Map.addLayer(ARVIReclass, {min: 0, max: 2, palette: ['FFFF00', '#3fca29', '006400']},'ARVIReclass', 1);
+*/
+
+
+Export.image.toDrive({
+  image: NDVIReclass, 
+  description: 'Insumo_Paramuno', 
+  folder: 'DESCARGAS_GEE',
+  fileNamePrefix: 'Insumo_Paramuno',
+  region: area, 
+  scale: 10, 
+  maxPixels: 1e10
+  
+});
+
+## CODIGO NUMERO 2
+
+
+//===============================================================================================================================
+//                                                 MODELO MONITOREO AREAS DE INCENDIO
+//===============================================================================================================================
+// Este codigo muestra la relación de quemado normalizada se aplicará a las imágenes de antes y después de un incendio forestal.
+// Esto calculando la diferencia después (dNBR) se deriva Burn Severity, que muestra el espacio impacto de la perturbación. 
+// Las imágenes utilizadas en este proceso provienen de Sentinel-2 o Landsat 8.
+//===============================================================================================================================//
+
+//***********************************************UBICA EL ÁREA DE ESTUDIO********************************************************//
+
+
+
+//*******************************************************************************************************************************
+//                            PART 1: SELECCIONA,DIBUJA IMPORTA EL AREA A ANALIZAR
+// incialmente debemos importar o dibujar una geometria del area donde queremos realizar el analisis por afectaciones de fuego,
+// esta se puede hacer con la herramienta de dibujo de geometrias o importando un shapefile o archivo CSV esto con el fin de deli-
+// mitar la zona de estudio, una vez hecho esto procedemos a colocarle nombre en la zona de archivos importados y la llamamos table.
+
+//*******************************************************************************************************************************
+//                                  PART 2: ESTABLECE LAS FECHAS DE ANALISIS
+
+//Establezca las fechas de inicio y finalización de un período ANTES del incendio, esto se recomienda que para landsat 8 sea de 3 meses
+//por análisis mientras que para sentinel 2 sea de cada mes esto la disponibilidad de imágenes que captan los satélites y en el detalle 
+//del analisis.
+
+//Establezca la fecha o parámetros de inicio y fin de los incendios
+var prefire_start = '2024-01-01';   // <--- fecha de Inicio del incendio
+var prefire_end = '2024-05-07';     // <--- fecha Fin del incendio
+
+// Establecer la fecha o parametros despues del incendio
+var postfire_start = '2024-01-01'; // <--- fecha después del incendio
+var postfire_end = '2024-05-07';   // <--- fecha después del incendio
+
+//******************************************************************************************************************************
+//                                     PART 3: SELECCIONA EL SATELITE A USAR
+
+// Puede seleccionar imágenes de detección remota de dos sensores satelitales disponibles.
+// Considere los detalles de cada misión a continuación para elegir los datos adecuados para sus necesidades.
+
+// Landsat 8  (L8)                       |  Sentinel-2   (S2)
+//-------------------------------------------------------------------------------------------
+// lanzamiento:     Febrero  11, 2015    |  Junio 23, 2015 & Marzo 7, 2017
+// tasa de repetición: 16 dias           |  5 dias (desde 2017)
+// resolucion:      30 metros            |  10 metros
+// ventajas:    serie temporal más larga | 9 veces mayor detalle espacial
+//    archivo de exportación más pequeño | mayor probabilidad de imágenes sin nubes
+
+//Selecciona uno de los siguientes:   'L8'  o 'S2' 
+
+var platform = 'S2';        // <--- asigna tu satelite a la variable "" de plataforma recuerda que puedes elegir si 'L8'  o 'S2'
+                                 // si deseas usar el satelite landsat 8 escribe L8 o si quieres trabajar con sentinel 2 
+                                 // escribe S2.
+
+//*******************************************************************************************************************************
+
+//                               PARTE 4: IDENTIFICAR Y EJECUTAR ENTRADAS DE USUARIO
+
+//---------------------------------- Traducción de las entradas del usuario-------------------------------------------------------
+
+// Imprimir plataforma Satélite y fechas a consola
+if (platform == 'S2' | platform == 's2') {
+  var ImCol = 'COPERNICUS/S2_SR_HARMONIZED';  // <---Satelite usado para sentinel 2
+  var pl = 'Sentinel-2';
+} else {
+  var ImCol = 'LANDSAT/LC08/C01/T1_SR'; //<---Satelite usado para landsat 8
+  var pl = 'Landsat 8';
+}
+print(ee.String('Satelite seleccionado para el análisis: ').cat(pl));
+print(ee.String('Incendio ocurrido entre ').cat(prefire_end).cat(' y ').cat(postfire_start));
+
+// Localizacion
+var area = ee.FeatureCollection(ALTAMIRA);
+
+// Establezca el área de estudio como centro del mapa.
+Map.centerObject(area);
+Map.addLayer({
+  eeObject: area, 
+  name: 'Areas Analisis', 
+  shown: 0, 
+});
+
+
+//----------------------- Seleccionar imágenes por hora, ubicación y nubosidad ---------------------------------------------------
+var imagery = ee.ImageCollection(ImCol);
+
+// Establecer el umbral máximo de cobertura de nubes (0-100)
+var maxCloudCover = 30; // <--- Ingrese el % de nubeS, entre mas % aumentan la disponiblidad de imagenes pero tambien la nubes en ellas
+
+// En las siguientes líneas, las imágenes se recopilarán en un ImageCollection, según el
+// ubicación de nuestra área de estudio, un marco de tiempo determinado y la proporción de cobertura de nubes.
+var prefireImCol = ee.ImageCollection(imagery
+    // Filtrar por fechas.
+    .filterDate(prefire_start, prefire_end)
+    // Filtrar por ubicación.
+    .filterBounds(area)
+    // Filtrar por nubosidad.
+    .filter(ee.Filter.lt('CLOUD_COVER', maxCloudCover)));
+
+// Selecciona todas las imágenes que se superponen con el área de estudio de un marco de tiempo dado
+var postfireImCol = ee.ImageCollection(imagery
+    // Filtrar por fechas.
+    .filterDate(postfire_start, postfire_end)
+    // Filtrar por ubicación.
+    .filterBounds(area)
+    // Filtrar por nubosidad.
+    .filter(ee.Filter.lt('CLOUD_COVER', maxCloudCover)));
+
+// Agrega las imágenes recortadas a la consola de la derecha
+print("Pre-fire Image Collection: ", prefireImCol); 
+print("Post-fire Image Collection: ", postfireImCol);
+
+//**********************************************************************************************************************************
+//                           PART 5: APLICAR UNA MASCARA DE NUBES,NIEVE Y SOMBRAS
+
+// Función para enmascarar nubes de la banda de calidad de píxeles de los datos de Sentinel-2 SR.
+function maskS2sr(image) {
+  // Los bits 10 y 11 son nubes y cirros, respectivamente.
+  var cloudBitMask = ee.Number(2).pow(10).int();
+  var cirrusBitMask = ee.Number(2).pow(11).int();
+  // Obtener la banda de control de calidad de píxeles.
+  var qa = image.select('QA60');
+  // Todas las banderas deben establecerse en cero, lo que indica condiciones claras.
+  var mask = qa.bitwiseAnd(cloudBitMask).eq(0)
+      .and(qa.bitwiseAnd(cirrusBitMask).eq(0));
+  // Devuelve la imagen enmascarada, escalada a reflectancia TOA, sin las bandas QA.
+  return image.updateMask(mask)
+      .copyProperties(image, ["system:time_start"]);
+}
+
+// Función para enmascarar nubes de la banda de calidad de píxeles de los datos Landsat 8 SR.
+function maskL8sr(image) {
+  // Los bits 3 y 5 son sombra de nube y nube, respectivamente.
+  var cloudShadowBitMask = 1 << 3;
+  var cloudsBitMask = 1 << 5;
+  var snowBitMask = 1 << 4;
+  // Obtener la banda de control de calidad de píxeles.
+  var qa = image.select('pixel_qa');
+  // Todas las banderas deben establecerse en cero, lo que indica condiciones claras.
+  var mask = qa.bitwiseAnd(cloudShadowBitMask).eq(0)
+      .and(qa.bitwiseAnd(cloudsBitMask).eq(0))
+      .and(qa.bitwiseAnd(snowBitMask).eq(0));
+  // Devuelve la imagen enmascarada, escalada a reflectancia TOA, sin las bandas QA.
+  return image.updateMask(mask)
+      .select("B[0-9]*")
+      .copyProperties(image, ["system:time_start"]);
+}
+
+// Aplicar máscara de nube específica de la plataforma
+if (platform == 'S2' | platform == 's2') {
+  var prefire_CM_ImCol = prefireImCol.map(maskS2sr);
+  var postfire_CM_ImCol = postfireImCol.map(maskS2sr);
+} else {
+  var prefire_CM_ImCol = prefireImCol.map(maskL8sr);
+  var postfire_CM_ImCol = postfireImCol.map(maskL8sr);
+}
+
+
+//**************************************************************************************************************************************
+//                                              PARTE 6: IMÁGEN INDIVIDUAL Y CLIP DE IMÁGENES AL ÁREA DE ESTUDIO
+
+var pre_mos = ee.Image('COPERNICUS/S2_SR_HARMONIZED/20220331T151659_20220331T152018_T18NZL').clip(area); ////---> SE DEBE AJUSTAR A UNA IMÁGEN UNICA
+var post_mos = ee.Image('COPERNICUS/S2_SR_HARMONIZED/20220823T151721_20220823T151717_T18NZL').clip(area);
+
+var pre_cm_mos = ee.Image('COPERNICUS/S2_SR_HARMONIZED/20220331T151659_20220331T152018_T18NZL').clip(area);
+var post_cm_mos = ee.Image('COPERNICUS/S2_SR_HARMONIZED/20220823T151721_20220823T151717_T18NZL').clip(area);
+
+// Agrega las imágenes recortadas a la consola
+print("Imagen en color verdadero antes del incendio: ", pre_mos); 
+print("Imagen de color verdadero posterior al incendio: ", post_mos);
+
+//****************************************************************************************************************************************
+//                                                PARTE 7: CALCULAR NBR PARA IMÁGENES ANTES Y POST-FUEGO
+
+// Aplicar NBR específico de la plataforma = (NIR-SWIR2) / (NIR+SWIR2)
+if (platform == 'S2' | platform == 's2') {
+  var preNBR = pre_cm_mos.normalizedDifference(['B8','B12']);
+  var postNBR = post_cm_mos.normalizedDifference(['B8','B12']);
+} else {
+  var preNBR = pre_cm_mos.normalizedDifference(['SR_B5', 'SR_B7']); 
+  var postNBR = post_cm_mos.normalizedDifference(['SR_B5', 'SR_B7']);
+}
+// Agregue las imágenes NBR a la consola 
+print("Ratio de quema normalizado previo al incendio: ", preNBR);
+print("Proporción de area quemada normalizada posterior al incendio: ", postNBR);
+
+//***************************************************************************************************************************************
+//                                               PART 8: CALCULE LA DIFERENCIA ENTRE IMÁGENES ANTES Y POST-FUEGO
+
+// Se llama el resultado delta NBR o dNBR
+var dNBR_unscaled = preNBR.subtract(postNBR);
+
+// Escale el producto según los estándares de USGS
+var dNBR = dNBR_unscaled.multiply(1000);
+
+// Agrega la imagen de diferencia a la consola
+print("Diferencia en la relación de quema normalizada: ", dNBR);
+
+//***************************************************************************************************************************************
+//                                                      PART 9: AGREGAR CAPAS AL MAPA
+
+// Agregar límite.
+Map.addLayer(area.draw({color: 'ffffff', strokeWidth: 5}), {},'Area de estudio');
+
+//---------------------------------- Imágenes en color verdadero ------------------------------------
+
+// Aplicar parámetros de visualización específicos de la plataforma para imágenes en color verdadero
+if (platform == 'S2' | platform == 's2') {
+  var vis = {bands: ['B4', 'B3', 'B2'], max: 2000, gamma: 1.5};
+} else {
+  var vis = {bands: ['B4', 'B3', 'B2'], min: 0, max: 4000, gamma: 1.5};
+}
+
+// Agrega las imágenes en color verdadero al mapa.
+Map.addLayer(pre_mos, vis,'Imagen previa al incendio');
+Map.addLayer(post_mos, vis,'Imagen posterior al incendio');
+
+// Agregue las imágenes en color verdadero al mapa con la mascara de nubes.
+Map.addLayer(pre_cm_mos, vis,'Imagen en color verdadero antes del disparo - Nubes enmascaradas');
+Map.addLayer(post_cm_mos, vis,'Imagen de color verdadero posterior al incendio - Nubes enmascaradas');
+
+//--------------------------- Producto de relación de quemado: escala de grises -------------------------------
+
+var grey = ['white', 'black'];
+Map.addLayer(preNBR, {min: -1, max: 1, palette: grey}, 'Relación de quema normalizada antes del incendio');
+Map.addLayer(postNBR, {min: -1, max: 1, palette: grey}, 'Relación de quema normalizada despues del incendio');
+Map.addLayer(dNBR, {min: -1000, max: 1000, palette: grey}, 'escala de grises dNBR');
+
+//------------------------- Producto de relación de quema - Clasificación USGS ----------------------------
+
+// Definir un estilo SLD de intervalos discretos para aplicar a la imagen.
+var sld_intervals =
+  '<RasterSymbolizer>' +
+    '<ColorMap type="intervals" extended="false" >' +
+      '<ColorMapEntry color="#ffffff" quantity="-500" label="-500"/>' +
+      '<ColorMapEntry color="#7a8737" quantity="-250" label="-250" />' +
+      '<ColorMapEntry color="#acbe4d" quantity="-100" label="-100" />' +
+      '<ColorMapEntry color="#0ae042" quantity="100" label="100" />' +
+      '<ColorMapEntry color="#fff70b" quantity="270" label="270" />' +
+      '<ColorMapEntry color="#ffaf38" quantity="440" label="440" />' +
+      '<ColorMapEntry color="#ff641b" quantity="660" label="660" />' +
+      '<ColorMapEntry color="#a41fd6" quantity="2000" label="2000" />' +
+    '</ColorMap>' +
+  '</RasterSymbolizer>';
+
+// Agregue la imagen al mapa utilizando tanto la rampa de color como los esquemas de intervalo.
+Map.addLayer(dNBR.sldStyle(sld_intervals), {}, 'dNBR CLASIFICADO');
+
+// Seperate result into 8 burn severity classes
+var thresholds = ee.Image([-1000, -251, -101, 99, 269, 439, 659, 2000]);
+var classified = dNBR.lt(thresholds).reduce('sum').toInt();
+
+//***************************************************************************************************************************************
+//                                           PART 10: AGREGAR ESTADÍSTICAS DE ÁREA QUEMADA
+
+// Contar el número de píxeles en toda la capa
+var allpix =  classified.updateMask(classified);  // enmascara toda la capa
+var pixstats = allpix.reduceRegion({
+  reducer: ee.Reducer.count(),               // cuenta píxeles en una sola clase
+  geometry: area,
+  scale: 30
+  });
+var allpixels = ee.Number(pixstats.get('sum')); // extrae el recuento de píxeles como un número
+
+
+// crea una lista vacía para almacenar valores de área 
+var arealist = [];
+
+// crea una función para derivar la extensión de una clase de gravedad de quemado
+// los argumentos son el número de clase y el nombre de clase
+var areacount = function(cnr, name) {
+ var singleMask =  classified.updateMask(classified.eq(cnr));  // enmascara una sola clase
+ var stats = singleMask.reduceRegion({
+  reducer: ee.Reducer.count(),               // cuenta píxeles en una sola clase
+  geometry: area,
+  scale: 30
+  });
+var pix =  ee.Number(stats.get('sum'));
+var hect = pix.multiply(900).divide(10000);               // Píxel Landsat = 30m x 30m --> 900 m2
+var perc = pix.divide(allpixels).multiply(10000).round().divide(100);   // obtiene el porcentaje de área por clase y redondea a 2 decimales
+arealist.push({Class: name, Pixels: pix, Hectares: hect, Percentage: perc});
+};
+
+// clases de gravedad en diferente orden
+var names2 = ['NA', 'Gravedad alta', 'Gravedad moderada-alta',
+'Gravedad moderada-baja', 'Gravedad baja', 'No quemado', 'Rebrote mejorado, bajo', 'Rebrote mejorado, alto'];
+
+//ejecutar funcion para cada clase
+for (var i = 0; i < 8; i++) {
+  areacount(i, names2[i]);
+  }
+
+print('Área quemada por clase de gravedad', arealist, '--> haga clic en la lista de objetos para clases individuales');
+
+//***************************************************************************************************************************************
+//                                               PART 11: AÑADIR UNA LEYENDA
+// Establecer la posición del panel
+var legend = ui.Panel({
+  style: {
+    position: 'bottom-left',
+    padding: '8px 15px'
+  }});
+ 
+// Crear título de leyenda
+var legendTitle = ui.Label({
+  value: 'Clases de areas afectadas por severidad',
+  style: {fontWeight: 'bold',
+    fontSize: '18px',
+    margin: '0 0 4px 0',
+    padding: '0'
+    }});
+ 
+// Agregar el título al panel
+legend.add(legendTitle);
+ 
+// Crea y aplica estilo a 1 fila de la leyenda.
+var makeRow = function(color, name) {
+ 
+      // Cree la etiqueta que en realidad es el cuadro de color.
+      var colorBox = ui.Label({
+        style: {
+          backgroundColor: '#' + color,
+          // Usa padding para dar la altura y el ancho de la caja.
+          padding: '8px',
+          margin: '0 0 4px 0'
+        }});
+ 
+      // Cree la etiqueta rellena con el texto de descripción.
+      var description = ui.Label({
+        value: name,
+        style: {margin: '0 0 4px 6px'}
+      });
+ 
+      // Devuelve el panel
+      return ui.Panel({
+        widgets: [colorBox, description],
+        layout: ui.Panel.Layout.Flow('horizontal')
+      })};
+ 
+// Paleta con los colores
+//            verde oliva, verde amarillento, verde lima brillante, amarillo, naranja, naranja oscuro, violeta, Blanco
+var palette =['7a8737', 'acbe4d', '0ae042', 'fff70b', 'ffaf38', 'ff641b', 'a41fd6', 'ffffff'];
+ 
+// Nombre de la leyenda
+var names = ['7-Rebrote mejorado, alto', '6-Rebrote mejorado, bajo', '5-Sin quemar', '4-Gravedad baja',
+'3-Gravedad moderada-baja', '2-Gravedad moderada-alta', '1-Gravedad alta', '0-NA'];
+ 
+// Agregar color y nombres
+for (var i = 0; i < 8; i++) {
+  legend.add(makeRow(palette[i], names[i]));
+  }  
+ 
+// Agregar leyenda al mapa (alternativamente, también puede imprimir la leyenda en la consola)
+Map.add(legend);
+
+//***************************************************************************************************************************************
+//                                               PART 12: PREPARAR EXPORTACIÓN DE ARCHIVO
+//Asegurate que al momento de descargar el archivo le ingreses el codigo del sistema de coordenadas que deseas, como se llamara
+// el archivo, en que carpeta se va alojar y como aparecera el nombre del archivo en el panel de descargas
+var id = dNBR.id().getInfo();
+      
+Export.image.toDrive({image: classified, scale: 30, description:'dNBR-Clasificacion' , fileNamePrefix: 'dNBR-Clasificacion',region: area, maxPixels: 1e10}); // <--- Descarga la clasificacion
+Export.image.toDrive({image: post_cm_mos.visualize(vis), scale: 30, description: 'dNBR-ColorverdaderoDespuesdelincendio', fileNamePrefix: 'dNBR-Color verdadero Despues del incendio ',region: area, maxPixels: 1e10}); // <--- Descarga la imagen despues del incendio
+
+Map.addLayer(roi);
 
 
 
