@@ -1607,55 +1607,222 @@ function RefinedLee(img) {
 }
 
 ## CÓDIGO NÚMERO 2
+
+//===============================================================================================================================
+//                                MODELO DESCARGA DATOS NDWI PARA UNA REGIÓN DE INTERÉS
+//===============================================================================================================================
+
+
+//===============================================================================================================================//
+
+//*******************************************************************************************************************************
+//                            PART 1: SELECCIONA,DIBUJA IMPORTA EL AREA A ANALIZAR
+// incialmente debemos importar o dibujar una geometria del area donde se encuentran los predios viables para interpretación 
+// esta se puede hacer con la herramienta de dibujo de geometrias o importando un shapefile o archivo CSV esto con el fin de deli-
+// mitar la zona de estudio, una vez hecho esto procedemos a colocarle nombre en la zona de archivos importados.
 Map.addLayer({
-  eeObject: ubicacion,
-  name: 'Municipio de Santa Luzia do Itanhy',
-  shown: 0
+  eeObject:EAM, 
+  name: 'EAM', 
+  shown: 0, 
 });
 
-// Localizacion
-var area = ee.FeatureCollection(ubicacion);
+Map.addLayer({
+  eeObject:ZH, 
+  name: 'Zonas Humedas', 
+  shown: 0, 
+});
 
-// Establezca el área de estudio como centro del mapa.
-Map.centerObject(area);
+//throw('stop'); // ---> PONER EN COMENTARIOS CON: //, EN EL MOMENTO DE TENER LA UBICACIÓN DEL PREDIO PARA LA DESCARGA
 
-var dataset = ee.Image('JRC/GSW1_4/GlobalSurfaceWater').clip(area);
+//===============================================================================================================================
+//                                MODELO DESCARGA DATOS NDWI PARA UNA REGIÓN DE INTERÉS
+//===============================================================================================================================
 
-var seasonality = dataset.select('seasonality').lte(6); // Seleccionamos la banda 'occurrence' y aplicamos la máscara
 
-// Aplicamos la máscara a la imagen del dataset
-var seasonalityUpdate = dataset.updateMask(seasonality).toUint16();
+//===============================================================================================================================//
 
-var visualizationSeasonality = {
-  bands: ['seasonality'],
-  min: 0,
-  max: 6,
-    palette: ['ffffff', 'ffbbbb']
-};
+//*******************************************************************************************************************************/
+//                         PART 1: DEFINIR LOS PARÁMETROS DEL FILTRO DE COLECCIÓN Y DE LA MÁSCARA DE NUBE
+// Parameter	Type	Description
+/*
+AOI             ==  ee.Geometry	Area of interest
+START_DATE      ==  string	Fecha de inicio de la recogida de imágenes (inclusive)
+END_DATE        ==  string	Fecha de finalización de la recogida de imágenes (excluyente)
+CLOUD_FILTER    ==  integer Porcentaje máximo de cobertura de nubes permitido en la colección de imágenes
+CLD_PRB_THRESH	==  integer Probabilidad de nubes (%); los valores superiores se consideran nubes
+NIR_DRK_THRESH	==  float Reflectancia en el infrarrojo cercano; los valores inferiores se consideran sombra potencial de nubes
+CLD_PRJ_DIST    ==  float Maximum Distancia máxima (km) para buscar sombras de nubes desde los bordes de las nubes
+BUFFER          ==  integer Distancia (m) para dilatar el borde de los objetos identificados como nubes
+*/
 
-//Map.addLayer(seasonalityUpdate, visualizationSeasonality, 'seasonality');
 
-var transition = {
-  bands: ['transition'],
-  min: 0,
-  max: 10,
-  palette: ['ffffff', '#0000ff', '#22b14c', '#d1102d', '#99d9ea', '#b5e61d', '#e6a1aa', '#ff7f27', '#ffc90e', '#7f7f7f', '#c3c3c3']
-};
+var AOI = ee.FeatureCollection(ROI);
+var START_DATE = '2020-01-01';
+var END_DATE = '2020-12-30';
+var CLOUD_FILTER = 50;
+var CLD_PRB_THRESH = 50;
+var NIR_DRK_THRESH = 0.15;
+var CLD_PRJ_DIST = 1;
+var BUFFER = 50;
 
-Map.addLayer(seasonalityUpdate, transition, 'Transition');
+
+//Center the map view on a given AOI with the zool level.
+Map.centerObject(AOI); 
+
+//**********************************************************************************************************************************
+//                                       PART 2: ESTABLECIMIENTO DE LAS FUNCIÓNES
+
+/* 
+Defina una función para filtrar las colecciones SR y s2cloudless según los parámetros de área de interés y fecha 
+y, a continuación, únalas en la propiedad system:index. El resultado es una copia de la colección SR en la que cada 
+imagen tiene una nueva propiedad 's2cloudless' cuyo valor es la imagen s2cloudless correspondiente. 
+*/
+
+function get_s2_sr_cld_col(aoi, start_date, end_date) {
+    // # Import and filter S2 SR.
+    var s2_sr_col = (ee.ImageCollection('COPERNICUS/S2_SR')
+        .filterBounds(aoi)
+        .filterDate(start_date, end_date)
+        .filter(ee.Filter.lte('CLOUDY_PIXEL_PERCENTAGE', CLOUD_FILTER)))
+        .map(function(image1){return image1.clip(AOI)});
+
+    // # Import and filter s2cloudless.
+    var s2_cloudless_col = (ee.ImageCollection('COPERNICUS/S2_CLOUD_PROBABILITY')
+        .filterBounds(aoi)
+        .filterDate(start_date, end_date))
+        .map(function(image1){return image1.clip(AOI)});
+        
+    // # Join the filtered s2cloudless collection to the SR collection by the 'system:index' property.
+    return ee.ImageCollection(ee.Join.saveFirst('s2cloudless').apply({
+        'primary': s2_sr_col,
+        'secondary': s2_cloudless_col,
+        'condition': ee.Filter.equals({
+            'leftField': 'system:index',
+            'rightField': 'system:index'
+        })
+    }));
+}
+
+
+function add_cloud_bands(img) {
+    // # Get s2cloudless image, subset the probability band.
+    var cld_prb = ee.Image(img.get('s2cloudless')).select('probability');
+
+    // # Condition s2cloudless by the probability threshold value.
+    var is_cloud = cld_prb.gt(CLD_PRB_THRESH).rename('clouds');
+
+    // # Add the cloud probability layer and cloud mask as image bands.
+    return img.addBands(ee.Image([cld_prb, is_cloud]));
+    
+}
+
+
+function add_shadow_bands(img) {
+    // # Identify water pixels from the SCL band.
+    var not_water = img.select('SCL').neq(6);
+
+    // # Identify dark NIR pixels that are not water (potential cloud shadow pixels).
+    var SR_BAND_SCALE = 1e4;
+    var dark_pixels = img.select('B8').lt(NIR_DRK_THRESH*SR_BAND_SCALE).multiply(not_water).rename('dark_pixels');
+
+    // # Determine the direction to project cloud shadow from clouds (assumes UTM projection).
+    var shadow_azimuth = ee.Number(90).subtract(ee.Number(img.get('MEAN_SOLAR_AZIMUTH_ANGLE')));
+
+    // # Project shadows from clouds for the distance specified by the CLD_PRJ_DIST input.
+    var cld_proj = (img.select('clouds').directionalDistanceTransform(shadow_azimuth, CLD_PRJ_DIST*10)
+        .reproject({'crs': img.select(0).projection(), 'scale': 100})
+        .select('distance')
+        .mask()
+        .rename('cloud_transform'));
+
+    // # Identify the intersection of dark pixels with cloud shadow projection.
+    var shadows = cld_proj.multiply(dark_pixels).rename('shadows');
+
+    // # Add dark pixels, cloud projection, and identified shadows as image bands.
+    return img.addBands(ee.Image([dark_pixels, cld_proj, shadows]));
+}
+
+
+function add_cld_shdw_mask(img) {
+    // # Add cloud component bands.
+    var img_cloud = add_cloud_bands(img);
+
+    // # Add cloud shadow component bands.
+    var img_cloud_shadow = add_shadow_bands(img_cloud);
+
+    // # Combine cloud and shadow mask, set cloud and shadow as value 1, else 0.
+    var is_cld_shdw = img_cloud_shadow.select('clouds').add(img_cloud_shadow.select('shadows')).gt(0);
+
+    // # Remove small cloud-shadow patches and dilate remaining pixels by BUFFER input.
+    // # 20 m scale is for speed, and assumes clouds don't require 10 m precision.
+    is_cld_shdw = (is_cld_shdw.focal_min(2).focal_max(BUFFER*2/20)
+        .reproject({'crs': img.select([0]).projection(), 'scale': 20})
+        .rename('cloudmask'));
+
+    // # Add the final cloud-shadow mask to the image.
+    return img_cloud_shadow.addBands(is_cld_shdw);
+}
+
+
+
+function apply_cld_shdw_mask(img) {
+    // # Subset the cloudmask band and invert it so clouds/shadow are 0, else 1.
+    var not_cld_shdw = img.select('cloudmask').not();
+
+    // # Subset reflectance bands and update their masks, return the result.
+    return img.select('B.*').updateMask(not_cld_shdw);
+}
+
+var s2_sr_cld_col = get_s2_sr_cld_col(AOI, START_DATE, END_DATE);
+
+var s2_sr_median = (s2_sr_cld_col.map(add_cld_shdw_mask)
+                             .map(apply_cld_shdw_mask)
+                             .mosaic());
+
+Map.addLayer(s2_sr_median, {bands: ["B4","B3","B2"],
+gamma: 1,
+max: 2744.2910152719487,
+min: 459.9036445041072,
+opacity: 1}, 'S2 cloud-free mosaic');
+
+/******************************************************************************************************************************/
+//                                     PART 6: AGREGAR INDICES ESPECTRALES
+
+//Computes the normalized difference between
+var addIndices = function(image) {
+  var NDWI = image.normalizedDifference(['B3', 'B8']).rename(['NDWI']);
+  return image.addBands(NDWI)};
+
+var composite = addIndices(s2_sr_median);
+var image = composite.clip(AOI);
+
+Map.addLayer(image, {min: -0.2648029338212383, max: 0.42513437420015376, bands: ['NDWI']},'NDWI', 0);
+
+
+// Reclasificar el NDWI usando una función de mapeo condicional
+var NDWIReclass = image.select('NDWI').expression(
+  "b(0) > 0.6 && b(0) <= 1 ? 3 : " +      // Superficie del agua,
+  "b(0) > 0 && b(0) <= 0.6 ? 2 : " +    // Inundación, humedad,
+  "b(0) > -0.3 && b(0) <= 0 ? 1 : " +    // Sequía moderada, superficies sin agua,
+  "b(0) > -1 && b(0) <= -0.3 ? 0 : 0"   // Sequía, superficies sin agua
+).rename('NDWI_Reclass').clip(AOI);
+
+Map.addLayer(NDWIReclass, {min: 0, max: 3, palette: ['FFFF00', 'F2FF00', 'FEB607', '0086FF']},'NDWIReclass', 0);
+
+var NDWIReclassMasked = NDWIReclass.updateMask(NDWIReclass.gt(1));
+
+Map.addLayer(NDWIReclassMasked, {min: 1, max: 3, palette: ['FFFF00', 'F2FF00', 'FEB607', '0086FF']}, 'NDWIReclassMasked', 1);
 
 Export.image.toDrive({
-  image: seasonalityUpdate.select('transition'), 
-  description: 'Humedales_Brasil',
-  folder: 'DESCARGAS_GEE', // Cambiar folder
-  fileNamePrefix: 'Humedales_Brasil', // Cambiar nombre predio
-  region: area, 
+  image: NDWIReclassMasked, 
+  description: 'NDWI_EAM_2018',
+  folder: 'DESCARGAS_GEE',                                                              // Cambiar folder
+  fileNamePrefix: 'NDWI_EAM_2018',                                                   // Cambiar nombre predio
+  region: AOI, 
   scale: 30, 
-  maxPixels: 1e10
+  maxPixels: 1e11
+
 });
-
-
-
 
 
 
